@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // gh-watch: wakes the Claude Code session waiting on a GitHub issue or pull request when someone else replies.
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -46,10 +47,14 @@ export function eventsOf({ issue, comments, reviews = [], reviewComments = [] },
   return events
 }
 
-export const promptFor = (url, title, events) =>
-  `GitHub activity on ${url} ("${title}"), which this session is waiting on:\n\n` +
+// fresh: a new session taking the thread up, as the one waiting on it can't be resumed
+export const promptFor = (url, title, events, fresh) =>
+  `GitHub activity on ${url} ("${title}"), which ${fresh ? 'a session whose folder is gone was' : 'this session is'} waiting on:\n\n` +
   events.map(([at, what, body]) => `${what} at ${at}:\n${(body ?? '').slice(0, 4000)}`.trim()).join('\n\n') +
-  '\n\nThis session may be days old: re-read the thread and the code it touches first. You were woken unattended, so act only' +
+  (fresh
+    ? '\n\nYou are a new session taking it up: read the whole thread first, its latest handoff comment above all, and the code it touches.'
+    : '\n\nThis session may be days old: re-read the thread and the code it touches first.') +
+  ' You were woken unattended, so act only' +
   ' once the person resumes this session and agrees. Begin your answer with one line, under 100 characters, that a' +
   ' notification shows: what this needs and what you propose, e.g. "Adam picked option 2: I\'d add the notes to the lot' +
   ' page" or "Nothing needed: the reviewer approved". Then the detail, in a few lines.'
@@ -153,10 +158,25 @@ const watchOf = thread => {
   return w
 }
 
+// The main checkout a folder is in or a worktree of, which outlives the worktree
+function checkoutOf(cwd) {
+  try {
+    return dirname(execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim())
+  } catch {
+    // not in a repository
+  }
+}
+
+// Where a new session takes a thread up once its session's folder is gone: the main checkout it was in (a watch from
+// before checkouts were recorded: the folder above .claude/worktrees)
+export const restartIn = (w, exists = existsSync) =>
+  [w.checkout, w.cwd.replace(/\/\.claude\/worktrees\/.*$/, '')].find(d => d && d !== w.cwd && exists(d))
+
 function add(urls, session, cwd) {
   const watches = load()
   const since = new Date().toISOString()
-  for (const url of urls) watches[url] = { session, cwd, since: watches[url]?.since ?? since, added: watches[url]?.added ?? since }
+  const checkout = checkoutOf(cwd)
+  for (const url of urls) watches[url] = { session, cwd, checkout, since: watches[url]?.since ?? since, added: watches[url]?.added ?? since }
   save(watches)
 }
 
@@ -229,9 +249,12 @@ function poll(dryRun) {
     let woke
     if (events.length) {
       const thread = `${refOf(url)}: ${facts.issue.title}`
-      const prompt = promptFor(url, facts.issue.title, events)
-      if (dryRun) console.log(`--- would resume ${w.session} in ${w.cwd}\n${prompt}\n`)
-      else if (!existsSync(w.cwd)) {
+      const fresh = !existsSync(w.cwd) && restartIn(w)
+      const session = fresh ? randomUUID() : w.session
+      const cwd = fresh || w.cwd
+      const prompt = promptFor(url, facts.issue.title, events, !!fresh)
+      if (dryRun) console.log(`--- would ${fresh ? 'start a new session' : `resume ${w.session}`} in ${cwd}\n${prompt}\n`)
+      else if (!existsSync(cwd)) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
         notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
         woke = { at: now, said: `${events.at(-1)[1]}, but its session's folder is gone` }
@@ -241,10 +264,14 @@ function poll(dryRun) {
         notify(events, thread, `${headline(events.at(-1)[2] || '') || events.at(-1)[1]} · click to open its session`, clickOn(url))
         woke = { at: now, said: `its session was running: ${events.at(-1)[1]}, sent to you` }
       } else {
-        log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
-        const r = spawnSync('claude', ['-p', '--resume', w.session, ...extra, prompt], { cwd: w.cwd, encoding: 'utf8', timeout: 30 * 60e3 })
+        const why = events.map(e => e[1]).join(', ')
+        log(fresh ? `${url}: ${w.cwd} is gone, so new session ${session} takes it up in ${cwd} for ${why}` : `${url}: resuming ${session} for ${why}`)
+        const how = fresh ? ['--session-id', session] : ['--resume', session]
+        const r = spawnSync('claude', ['-p', ...how, ...extra, prompt], { cwd, encoding: 'utf8', timeout: 30 * 60e3 })
         const said = (r.stdout || r.stderr || r.error?.message || '').trim()
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
+        // The thread is the new session's from now on, so its next reply resumes it
+        if (fresh && r.status === 0) Object.assign(w, { session, cwd })
         writeFileSync(last, JSON.stringify({ url, ...w }))
         woke = { at: now, said: r.status === 0 ? headline(said) : `${events.at(-1)[1]}; the session failed (exit ${r.status})` }
         if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, clickOn(url))
