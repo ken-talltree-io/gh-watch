@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // gh-watch: wakes the Claude Code session waiting on a GitHub issue or pull request when someone else replies.
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -80,10 +80,73 @@ function notify(events, thread, msg, click) {
     ])
 }
 // A click that opens Terminal on the session watching a URL
-const resumeIn = url => [
-  '-execute',
-  `/usr/bin/osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "${fileURLToPath(import.meta.url)} resume ${url}"' -e 'end tell'`,
-]
+// A click runs gh-watch's click command, by node's full path: a notification's command gets no shell PATH
+const clickOn = url => ['-execute', `${process.execPath} ${fileURLToPath(import.meta.url)} click ${url}`]
+
+// The session still running, if it is: its process, kind ('bg' or 'interactive') and background job id, from Claude
+// Code's own record of running sessions (~/.claude/sessions, internal; claude agents --json leaves out interactive ones)
+function running(session) {
+  const dir = join(homedir(), '.claude', 'sessions')
+  const alive = pid => {
+    try {
+      return process.kill(pid, 0)
+    } catch (e) {
+      return e.code === 'EPERM'
+    }
+  }
+  for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')) : []) {
+    try {
+      const s = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+      if (s.sessionId === session && alive(s.pid)) return s
+    } catch {
+      // a record being written or removed as we read it
+    }
+  }
+}
+
+// The process attached to a background job (claude attach <id or name>) in a terminal, if one is
+function attached(s) {
+  const lines = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }).split('\n')
+  const names = [s.jobId, s.name].filter(Boolean)
+  const line = lines.find(l => {
+    const m = l.trim().match(/^(\d+) \S*claude attach (.+)$/)
+    return m && names.includes(m[2].replace(/^["']|["']$/g, ''))
+  })
+  return line && Number(line.trim().split(' ')[0])
+}
+
+// Brings forward the Terminal tab a process runs in; false if it's in no Terminal tab
+function focusTab(pid) {
+  const tty = `/dev/${execFileSync('ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf8' }).trim()}`
+  const script = [
+    'on run argv',
+    'tell application "Terminal"',
+    'repeat with w in windows',
+    // a window with no tabs (a settings or about window) can't be read: skip it
+    'try',
+    'repeat with t in tabs of w',
+    'if tty of t is (item 1 of argv) then',
+    'set selected of t to true',
+    'set index of w to 1',
+    'activate',
+    'return "found"',
+    'end if',
+    'end repeat',
+    'end try',
+    'end repeat',
+    'end tell',
+    'end run',
+  ]
+  return spawnSync('osascript', [...script.flatMap(l => ['-e', l]), tty], { encoding: 'utf8' }).stdout.trim() === 'found'
+}
+
+const watchOf = thread => {
+  const watches = load()
+  const url = thread && Object.keys(watches).find(u => u === thread || refOf(u) === thread)
+  const w = thread ? url && { url, ...watches[url] } : existsSync(last) && JSON.parse(readFileSync(last, 'utf8'))
+  if (!w) throw new Error(thread ? `Not watching ${thread}` : 'No session has been woken yet')
+  return w
+}
 
 function add(urls, session, cwd) {
   const watches = load()
@@ -93,16 +156,26 @@ function add(urls, session, cwd) {
 }
 
 // A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
+// The threads a command's gh calls acted on: a URL given as one's argument, or one gh printed alone on a line (what it
+// created or commented on); never another URL the command or its output happens to mention
+export function actedOn(command, output) {
+  const calls = [...command.matchAll(/\bgh\s+(issue|pr)\s+(create|comment|review)\b\s*(\S+)?/g)]
+  const printed = output.split('\n').map(l => l.trim()).filter(l => threadsIn(l)[0] && l.startsWith(threadsIn(l)[0]) && !/\s/.test(l))
+  return { calls, urls: [...new Set([...calls.flatMap(c => threadsIn(c[3] ?? '')), ...printed.flatMap(threadsIn)])] }
+}
+
+// A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
 function hook() {
   const input = JSON.parse(readFileSync(0, 'utf8'))
-  const command = input.tool_input?.command ?? ''
-  const m = command.match(/\bgh\s+(issue|pr)\s+(create|comment|review)\b\s*(\S+)?/)
-  if (!m) return
-  let urls = threadsIn(`${command}\n${JSON.stringify(input.tool_response ?? '')}`)
+  const response = input.tool_response
+  const { calls, urls } = actedOn(input.tool_input?.command ?? '', typeof response === 'string' ? response : (response?.stdout ?? ''))
+  if (!calls.length) return
   if (!urls.length) {
-    const arg = /^#?\d+$/.test(m[3] ?? '') ? [m[3].replace('#', '')] : []
+    // gh printed none (a review): ask gh which thread its argument, or the branch, names
+    const [, kind, , arg] = calls[0]
+    const repo = (input.tool_input.command.match(/(?:-R|--repo)[ =](\S+)/) ?? [])[1]
     try {
-      urls = threadsIn(gh([m[1], 'view', ...arg, '--json', 'url', '--jq', '.url'], input.cwd))
+      urls.push(...threadsIn(gh([kind, 'view', ...(/^#?\d+$/.test(arg ?? '') ? [arg.replace('#', '')] : []), ...(repo ? ['-R', repo] : []), '--json', 'url', '--jq', '.url'], input.cwd)))
     } catch {
       return
     }
@@ -144,6 +217,11 @@ function poll(dryRun) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
         notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
         woke = { at: now, said: `${events.at(-1)[1]}, but its session's folder is gone` }
+      } else if (running(w.session)) {
+        // A session still running isn't woken: a second process would continue a copy of it the open one never sees
+        log(`${url}: session ${w.session} is running, so the reply goes to you, not to it`)
+        notify(events, thread, `${headline(events.at(-1)[2] || '') || events.at(-1)[1]} · click to open its session`, clickOn(url))
+        woke = { at: now, said: `its session was running: ${events.at(-1)[1]}, sent to you` }
       } else {
         log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
         const r = spawnSync('claude', ['-p', '--resume', w.session, ...extra, prompt], { cwd: w.cwd, encoding: 'utf8', timeout: 30 * 60e3 })
@@ -151,7 +229,7 @@ function poll(dryRun) {
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
         writeFileSync(last, JSON.stringify({ url, ...w }))
         woke = { at: now, said: r.status === 0 ? headline(said) : `${events.at(-1)[1]}; the session failed (exit ${r.status})` }
-        if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, resumeIn(url))
+        if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, clickOn(url))
         else notify(events, thread, `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`, ['-open', url])
       }
     }
@@ -163,12 +241,34 @@ function poll(dryRun) {
 }
 
 // Opens the session last woken (or the one watching a URL) where it ran, to read its answer and go on
+// Opens the session last woken (or the one watching a thread) where it is: attached if it runs in the background, its
+// Terminal tab if it's open in one, else resumed in its folder
 function resume(thread) {
-  const watches = load()
-  const url = thread && Object.keys(watches).find(u => u === thread || refOf(u) === thread)
-  const w = thread ? watches[url] : existsSync(last) && JSON.parse(readFileSync(last, 'utf8'))
-  if (!w) throw new Error(thread ? `Not watching ${thread}` : 'No session has been woken yet')
-  process.exit(spawnSync('claude', ['--resume', w.session], { cwd: w.cwd, stdio: 'inherit' }).status ?? 1)
+  const w = watchOf(thread)
+  const s = running(w.session)
+  if (s?.kind === 'interactive') {
+    if (!focusTab(s.pid)) console.log(`Session ${w.session.slice(0, 8)} is open in another terminal app: switch to it there`)
+    return
+  }
+  const pid = s && attached(s)
+  if (pid && focusTab(pid)) return console.log(`Session ${w.session.slice(0, 8)} is attached in another Terminal tab: brought it forward`)
+  const args = s ? ['attach', s.jobId] : ['--resume', w.session]
+  process.exit(spawnSync('claude', args, { cwd: w.cwd, stdio: 'inherit' }).status ?? 1)
+}
+
+// A notification clicked: the Terminal tab the session is open or attached in is brought forward, else Terminal opens
+// a tab on gh-watch resume
+function click(thread) {
+  const w = watchOf(thread)
+  const s = running(w.session)
+  if (s?.kind === 'interactive') {
+    if (!focusTab(s.pid)) spawnSync('open', [w.url])
+    return
+  }
+  const pid = s && attached(s)
+  if (pid && focusTab(pid)) return
+  const command = `${fileURLToPath(import.meta.url)} resume ${w.url}`
+  spawnSync('osascript', ['-e', 'on run argv', '-e', 'tell application "Terminal"', '-e', 'activate', '-e', 'do script (item 1 of argv)', '-e', 'end tell', '-e', 'end run', command])
 }
 
 // The PostToolUse hook, in ~/.claude/settings.json, so every session watches what it opens or replies on
@@ -251,6 +351,7 @@ const commands = {
     },
     list,
     resume: () => resume(args[0]),
+    click: () => click(args[0]),
     install,
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
