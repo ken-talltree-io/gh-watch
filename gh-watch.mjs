@@ -62,8 +62,8 @@ const clickable = existsSync(notifier)
 // A notification: what happened (the latest, and how many more), on which thread, then what to do, which a click does
 function notify(events, thread, msg, click) {
   const title = events.at(-1)[1] + (events.length > 1 ? ` (+${events.length - 1} more)` : '')
-  if (clickable) spawnSync(notifier, ['-title', title, '-subtitle', thread, '-message', msg, '-group', thread, ...click])
-  else
+  // One macOS refuses (its notifications not allowed in System Settings) falls back to osascript's, which can't be clicked
+  if (!clickable || spawnSync(notifier, ['-title', title, '-subtitle', thread, '-message', msg, '-group', thread, ...click]).status !== 0)
     spawnSync('osascript', [
       '-e', 'on run argv',
       '-e', 'display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)',
