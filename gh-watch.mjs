@@ -23,11 +23,16 @@ export const age = (from, now) => {
 }
 
 // What happened on a thread since a time, by anyone but me or a bot, oldest first
-export function eventsOf({ issue, comments, reviews = [], reviewComments = [] }, since, me) {
+// A comment of mine counts unless a session posted it (posted: the ids the hook saw in sessions' gh output), so a reply
+// from my phone or the web wakes the session as anyone's would
+export function eventsOf({ issue, comments, reviews = [], reviewComments = [] }, since, me, posted = new Set()) {
   const others = u => u && u.login !== me && u.type !== 'Bot'
   const after = t => t && t > since
+  const mine = c => c.user?.login === me && !posted.has(String(c.id))
   const events = [
-    ...comments.filter(c => others(c.user) && after(c.created_at)).map(c => [c.created_at, `${c.user.login} commented`, c.body]),
+    ...comments
+      .filter(c => (others(c.user) || mine(c)) && after(c.created_at))
+      .map(c => [c.created_at, mine(c) ? 'you commented' : `${c.user.login} commented`, c.body]),
     ...reviews
       .filter(r => others(r.user) && after(r.submitted_at) && (r.body || r.state !== 'COMMENTED'))
       .map(r => [r.submitted_at, `${r.user.login} reviewed (${r.state.toLowerCase()})`, r.body]),
@@ -155,7 +160,6 @@ function add(urls, session, cwd) {
   save(watches)
 }
 
-// A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
 // The threads a command's gh calls acted on: a URL given as one's argument, or one gh printed alone on a line (what it
 // created or commented on); never another URL the command or its output happens to mention
 export function actedOn(command, output) {
@@ -164,11 +168,24 @@ export function actedOn(command, output) {
   return { calls, urls: [...new Set([...calls.flatMap(c => threadsIn(c[3] ?? '')), ...printed.flatMap(threadsIn)])] }
 }
 
+// The comments a session's gh output names: what it posted (or read), never a reply of mine to wake it for
+export const commentsIn = text => [...text.matchAll(/#issuecomment-(\d+)/g)].map(m => m[1])
+const postedFile = join(home, 'posted.json')
+const posted = () => new Set(existsSync(postedFile) ? JSON.parse(readFileSync(postedFile, 'utf8')) : [])
+function remember(ids) {
+  if (!ids.length) return
+  mkdirSync(home, { recursive: true })
+  writeFileSync(postedFile, JSON.stringify([...new Set([...posted(), ...ids])].slice(-5000)))
+}
+
 // A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
 function hook() {
   const input = JSON.parse(readFileSync(0, 'utf8'))
   const response = input.tool_response
-  const { calls, urls } = actedOn(input.tool_input?.command ?? '', typeof response === 'string' ? response : (response?.stdout ?? ''))
+  const output = typeof response === 'string' ? response : (response?.stdout ?? '')
+  const command = input.tool_input?.command ?? ''
+  if (/\bgh\b/.test(command)) remember(commentsIn(output))
+  const { calls, urls } = actedOn(command, output)
   if (!calls.length) return
   if (!urls.length) {
     // gh printed none (a review): ask gh which thread its argument, or the branch, names
@@ -187,6 +204,7 @@ function poll(dryRun) {
   const watches = load()
   if (!Object.keys(watches).length) return
   const me = gh(['api', 'user', '--jq', '.login']).trim()
+  const seen = posted()
   // Plan mode by default: a session woken unattended reads and answers, but changes nothing until you resume it
   const extra = (process.env.GH_WATCH_CLAUDE_ARGS ?? '--permission-mode plan').split(' ').filter(Boolean)
   for (const [url, w] of Object.entries(watches)) {
@@ -207,7 +225,7 @@ function poll(dryRun) {
       log(`${url}: could not read it: ${e.stderr?.trim() || e.message}`)
       continue
     }
-    const events = eventsOf(facts, w.since, me)
+    const events = eventsOf(facts, w.since, me, seen)
     let woke
     if (events.length) {
       const thread = `${refOf(url)}: ${facts.issue.title}`
