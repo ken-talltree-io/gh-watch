@@ -11,7 +11,9 @@ someone else replies, even weeks later.
 - A woken session runs in plan mode: it reads the thread and the code and proposes what to do, changing nothing.
   `gh-watch resume` opens it, so you can read its answer and tell it to go ahead.
 
-Needs macOS, Node 22+, `gh` signed in, and `claude`.
+Needs macOS, Node 22+, `gh` signed in, and `claude`. With `brew install terminal-notifier`, clicking a notification
+opens Terminal on the woken session (or, when it couldn't be woken, the thread on GitHub); without it, a click does
+nothing useful, as macOS can't attach an action to an AppleScript notification.
 
 ## Install
 
