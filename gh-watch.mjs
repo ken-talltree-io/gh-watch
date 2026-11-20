@@ -27,8 +27,9 @@ export function eventsOf({ issue, comments, reviews = [], reviewComments = [] },
       .filter(c => others(c.user) && after(c.created_at))
       .map(c => [c.created_at, `${c.user.login} commented on ${c.path}:${c.line ?? c.original_line ?? ''}`, c.body]),
   ].sort(([a], [b]) => a.localeCompare(b))
-  if (issue.state === 'closed' && after(issue.closed_at))
-    events.push([issue.closed_at, issue.pull_request?.merged_at ? 'merged' : `closed by ${issue.closed_by?.login ?? 'someone'}`, ''])
+  // A merge ends the watch without waking anyone: it's what the session was waiting for
+  if (issue.state === 'closed' && after(issue.closed_at) && !issue.pull_request?.merged_at)
+    events.push([issue.closed_at, `closed by ${issue.closed_by?.login ?? 'someone'}`, ''])
   return events
 }
 

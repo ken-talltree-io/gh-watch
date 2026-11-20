@@ -33,8 +33,9 @@ test("reports others' replies since the last poll, not mine, a bot's or older on
   assert.deepEqual(events.map(e => e[1]), ['adam commented', 'maintainer reviewed (changes_requested)'])
 })
 
-test('reports a merge or close once', () => {
-  const merged = { state: 'closed', closed_at: '2026-11-05T00:00:00Z', pull_request: { merged_at: '2026-11-05T00:00:00Z' } }
-  assert.deepEqual(eventsOf({ issue: merged, comments: [] }, since, 'ken').map(e => e[1]), ['merged'])
-  assert.deepEqual(eventsOf({ issue: merged, comments: [] }, '2026-11-06T00:00:00Z', 'ken'), [])
+test('reports a close once, but not a merge', () => {
+  const closed = { state: 'closed', closed_at: '2026-11-05T00:00:00Z', closed_by: user('maintainer') }
+  assert.deepEqual(eventsOf({ issue: closed, comments: [] }, since, 'ken').map(e => e[1]), ['closed by maintainer'])
+  assert.deepEqual(eventsOf({ issue: closed, comments: [] }, '2026-11-06T00:00:00Z', 'ken'), [])
+  assert.deepEqual(eventsOf({ issue: { ...closed, pull_request: { merged_at: closed.closed_at } }, comments: [] }, since, 'ken'), [])
 })
