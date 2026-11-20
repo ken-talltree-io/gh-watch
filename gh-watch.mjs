@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // gh-watch: wakes the Claude Code session waiting on a GitHub issue or pull request when someone else replies.
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 const home = process.env.GH_WATCH_HOME ?? join(homedir(), '.claude', 'gh-watch')
 const file = join(home, 'watches.json')
@@ -13,6 +14,13 @@ const label = 'io.talltree.gh-watch'
 
 const pattern = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull)\/(\d+)/g
 export const threadsIn = text => [...new Set([...text.matchAll(pattern)].map(m => m[0]))]
+const refOf = url => url.replace(pattern, '$1#$3')
+
+// How long ago, said short: 5m, 3h, 2d
+export const age = (from, now) => {
+  const m = Math.max(0, Math.round((Date.parse(now) - Date.parse(from)) / 60e3))
+  return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
+}
 
 // What happened on a thread since a time, by anyone but me or a bot, oldest first
 export function eventsOf({ issue, comments, reviews = [], reviewComments = [] }, since, me) {
@@ -127,34 +135,39 @@ function poll(dryRun) {
       continue
     }
     const events = eventsOf(facts, w.since, me)
+    let woke
     if (events.length) {
-      const thread = `${repo}#${n}: ${facts.issue.title}`
+      const thread = `${refOf(url)}: ${facts.issue.title}`
       const prompt = promptFor(url, facts.issue.title, events)
       if (dryRun) console.log(`--- would resume ${w.session} in ${w.cwd}\n${prompt}\n`)
       else if (!existsSync(w.cwd)) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
         notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
+        woke = { at: now, said: `${events.at(-1)[1]}, but its session's folder is gone` }
       } else {
         log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
         const r = spawnSync('claude', ['-p', '--resume', w.session, ...extra, prompt], { cwd: w.cwd, encoding: 'utf8', timeout: 30 * 60e3 })
         const said = (r.stdout || r.stderr || r.error?.message || '').trim()
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
         writeFileSync(last, JSON.stringify({ url, ...w }))
+        woke = { at: now, said: r.status === 0 ? headline(said) : `${events.at(-1)[1]}; the session failed (exit ${r.status})` }
         if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, resumeIn(url))
         else notify(events, thread, `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`, ['-open', url])
       }
     }
     if (dryRun) continue
     if (facts.issue.state === 'closed') delete watches[url]
-    else watches[url] = { ...w, since: now }
+    else watches[url] = { ...w, since: now, title: facts.issue.title, ...(woke && { woke }) }
   }
   if (!dryRun) save(watches)
 }
 
 // Opens the session last woken (or the one watching a URL) where it ran, to read its answer and go on
-function resume(url) {
-  const w = url ? load()[url] : existsSync(last) && JSON.parse(readFileSync(last, 'utf8'))
-  if (!w) throw new Error(url ? `Not watching ${url}` : 'No session has been woken yet')
+function resume(thread) {
+  const watches = load()
+  const url = thread && Object.keys(watches).find(u => u === thread || refOf(u) === thread)
+  const w = thread ? watches[url] : existsSync(last) && JSON.parse(readFileSync(last, 'utf8'))
+  if (!w) throw new Error(thread ? `Not watching ${thread}` : 'No session has been woken yet')
   process.exit(spawnSync('claude', ['--resume', w.session], { cwd: w.cwd, stdio: 'inherit' }).status ?? 1)
 }
 
@@ -167,6 +180,31 @@ function addHook(script) {
   if (post.some(h => h.hooks?.some(x => x.command?.endsWith(' hook') && x.command.includes('gh-watch')))) return
   post.push({ matcher: 'Bash', hooks: [{ type: 'command', command }] })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
+}
+
+// Each watched thread, by the session waiting on it: its title, and how long it's been quiet or what it last woke for
+async function list() {
+  const watches = Object.entries(load())
+  if (!watches.length) return console.log('Not watching anything: a session watches each issue or PR it opens or replies on with gh')
+  const run = promisify(execFile)
+  // A title the poll hasn't stored yet is fetched
+  const titles = await Promise.all(
+    watches.map(([url, w]) =>
+      w.title ?? run('gh', ['api', `repos/${refOf(url).replace('#', '/issues/')}`, '--jq', '.title']).then(r => r.stdout.trim(), () => '?'),
+    ),
+  )
+  const now = new Date().toISOString()
+  const width = Math.max(...watches.map(([url]) => refOf(url).length))
+  const groups = Map.groupBy(watches.map(([url, w], i) => ({ url, w, title: titles[i] })), ({ w }) => `${w.session} ${w.cwd}`)
+  for (const rows of groups.values()) {
+    const { session, cwd } = rows[0].w
+    console.log(`\n${cwd.replace(homedir(), '~')} · session ${session.slice(0, 8)} · ${rows.length} thread${rows.length > 1 ? 's' : ''}`)
+    for (const { url, w, title } of rows) {
+      const state = w.woke ? `woke ${age(w.woke.at, now)} ago: ${w.woke.said}` : `quiet ${age(w.added, now)}`
+      console.log(`  ${refOf(url).padEnd(width)}  ${title.length > 60 ? title.slice(0, 59) + '…' : title}  · ${state}`)
+    }
+  }
+  console.log('\ngh-watch resume <owner/repo#n> opens the session waiting on a thread')
 }
 
 function install() {
@@ -211,11 +249,10 @@ const commands = {
       for (const url of args) delete watches[url]
       save(watches)
     },
-    list: () =>
-      Object.entries(load()).forEach(([url, w]) => console.log(`${url}  session ${w.session}  since ${w.since}  in ${w.cwd}`)),
+    list,
     resume: () => resume(args[0]),
     install,
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
   if (commands[cmd]) commands[cmd]()
-  else console.log('Usage: gh-watch install | list | resume [url] | add <url>… | remove <url>… | poll [--dry-run] | hook')
+  else console.log('Usage: gh-watch install | list | resume [url or owner/repo#n] | add <url>… | remove <url>… | poll [--dry-run] | hook')
