@@ -9,7 +9,11 @@ someone else replies, even weeks later.
   anyone but you or a bot, it resumes that session (`claude -p --resume`) with what happened, then shows a
   macOS notification. A closed thread stops being watched; a merged PR does too, waking no one.
 - A woken session runs in plan mode: it reads the thread and the code and proposes what to do, changing nothing.
-  `gh-watch resume` opens it, so you can read its answer and tell it to go ahead.
+  `gh-watch resume`, or clicking the notification, opens it, so you can read its answer and tell it to go ahead.
+- A session still running isn't woken, as a second process would continue a copy of it the open one never sees: the
+  notification carries the reply instead. Opening it attaches to it if it's a background job (`claude attach`), or
+  brings its Terminal tab forward; one that isn't running is resumed in its folder. Which sessions are running comes
+  from `~/.claude/sessions`, Claude Code's own internal record (`claude agents --json` leaves out interactive ones).
 
 Needs macOS, Node 22+, `gh` signed in, and `claude`. With `brew install terminal-notifier`, clicking a notification
 opens Terminal on the woken session (or, when it couldn't be woken, the thread on GitHub); without it, a click does
@@ -28,7 +32,7 @@ again after moving the folder. New sessions then pick up the hook.
 
 | Command | Does |
 |---|---|
-| `gh-watch resume [thread]` | Opens the session last woken, or the one watching a thread (its URL or `owner/repo#n`), in its folder |
+| `gh-watch resume [thread]` | Opens the session last woken, or the one watching a thread (its URL or `owner/repo#n`): attached, its tab, or resumed |
 | `gh-watch list` | Each watched thread by the session waiting on it: its title, and how long it's been quiet or what it last woke for |
 | `gh-watch add <url>…` | Watches a thread for the current session (run it inside one) |
 | `gh-watch remove <url>…` | Stops watching |
