@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { eventsOf, threadsIn } from './gh-watch.mjs'
+import { eventsOf, headline, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -38,4 +38,8 @@ test('reports a close once, but not a merge', () => {
   assert.deepEqual(eventsOf({ issue: closed, comments: [] }, since, 'ken').map(e => e[1]), ['closed by maintainer'])
   assert.deepEqual(eventsOf({ issue: closed, comments: [] }, '2026-11-06T00:00:00Z', 'ken'), [])
   assert.deepEqual(eventsOf({ issue: { ...closed, pull_request: { merged_at: closed.closed_at } }, comments: [] }, since, 'ken'), [])
+})
+
+test("a notification shows the session's first line, as plain text", () => {
+  assert.equal(headline('\n## **Adam picked option 2 on #1847:** I\'d add the notes to the lot page\n\nDetail…'), "Adam picked option 2 on #1847: I'd add the notes to the lot page")
 })

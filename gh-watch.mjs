@@ -36,8 +36,13 @@ export function eventsOf({ issue, comments, reviews = [], reviewComments = [] },
 export const promptFor = (url, title, events) =>
   `GitHub activity on ${url} ("${title}"), which this session is waiting on:\n\n` +
   events.map(([at, what, body]) => `${what} at ${at}:\n${(body ?? '').slice(0, 4000)}`.trim()).join('\n\n') +
-  '\n\nThis session may be days old: re-read the thread and the code it touches first. Then say in a few lines what this reply' +
-  ' needs and what you propose to do: you were woken unattended, so act only once the person resumes this session and agrees.'
+  '\n\nThis session may be days old: re-read the thread and the code it touches first. You were woken unattended, so act only' +
+  ' once the person resumes this session and agrees. Begin your answer with one line, under 100 characters, that a' +
+  ' notification shows: what this needs and what you propose, e.g. "Adam picked option 2: I\'d add the notes to the lot' +
+  ' page" or "Nothing needed: the reviewer approved". Then the detail, in a few lines.'
+
+// The first line a session said, as plain text, for a notification
+export const headline = said => (said.split('\n').find(l => l.trim()) ?? '').replace(/^[\s#>]+/, '').replace(/[*_`]/g, '').trim().slice(0, 150)
 
 const load = () => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {})
 const save = watches => {
@@ -50,8 +55,16 @@ const log = msg => {
 }
 const gh = (args, cwd) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const api = path => JSON.parse(gh(['api', path]))
-const notify = (title, msg) =>
-  spawnSync('osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, msg])
+// A notification: what happened (the latest, and how many more), on which thread, then what to do
+const notify = (events, thread, msg) =>
+  spawnSync('osascript', [
+    '-e', 'on run argv',
+    '-e', 'display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)',
+    '-e', 'end run',
+    events.at(-1)[1] + (events.length > 1 ? ` (+${events.length - 1} more)` : ''),
+    thread,
+    msg,
+  ])
 
 function add(urls, session, cwd) {
   const watches = load()
@@ -104,18 +117,19 @@ function poll(dryRun) {
     }
     const events = eventsOf(facts, w.since, me)
     if (events.length) {
+      const thread = `${repo}#${n}: ${facts.issue.title}`
       const prompt = promptFor(url, facts.issue.title, events)
       if (dryRun) console.log(`--- would resume ${w.session} in ${w.cwd}\n${prompt}\n`)
       else if (!existsSync(w.cwd)) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
-        notify('gh-watch', `${events.at(-1)[1]} on ${url}; its session's folder is gone`)
+        notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself")
       } else {
         log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
         const r = spawnSync('claude', ['-p', '--resume', w.session, ...extra, prompt], { cwd: w.cwd, encoding: 'utf8', timeout: 30 * 60e3 })
         const said = (r.stdout || r.stderr || r.error?.message || '').trim()
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
         writeFileSync(last, JSON.stringify({ url, ...w }))
-        notify(`${events.at(-1)[1]} on ${repo}#${n}`, `Run gh-watch resume to pick it up. ${said.slice(0, 150)}`)
+        notify(events, thread, r.status === 0 ? `${headline(said)} · gh-watch resume` : `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`)
       }
     }
     if (dryRun) continue
