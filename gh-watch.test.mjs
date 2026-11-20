@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { age, eventsOf, headline, threadsIn } from './gh-watch.mjs'
+import { actedOn, age, eventsOf, headline, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -47,4 +47,12 @@ test("a notification shows the session's first line, as plain text", () => {
 test('says how long ago in minutes, hours, then days', () => {
   const now = '2026-11-20T12:00:00Z'
   assert.deepEqual(['2026-11-20T11:55:00Z', '2026-11-20T09:00:00Z', '2026-11-17T12:00:00Z'].map(t => age(t, now)), ['5m', '3h', '3d'])
+})
+
+test('watches the thread a gh command acted on, not other URLs the command mentions', () => {
+  const command = 'gh pr create --fill --body "Fixes https://github.com/a/b/issues/1" && notify https://github.com/c/d/issues/2'
+  const output = 'remote: visit https://github.com/a/b/pull/new/x\nhttps://github.com/a/b/pull/3\n'
+  assert.deepEqual(actedOn(command, output).urls, ['https://github.com/a/b/pull/3'])
+  assert.deepEqual(actedOn('gh issue comment https://github.com/a/b/issues/4 --body hi', '').urls, ['https://github.com/a/b/issues/4'])
+  assert.deepEqual(actedOn('echo https://github.com/a/b/issues/4', 'https://github.com/a/b/issues/4').calls, [])
 })

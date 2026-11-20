@@ -142,16 +142,26 @@ function add(urls, session, cwd) {
 }
 
 // A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
+// The threads a command's gh calls acted on: a URL given as one's argument, or one gh printed alone on a line (what it
+// created or commented on); never another URL the command or its output happens to mention
+export function actedOn(command, output) {
+  const calls = [...command.matchAll(/\bgh\s+(issue|pr)\s+(create|comment|review)\b\s*(\S+)?/g)]
+  const printed = output.split('\n').map(l => l.trim()).filter(l => threadsIn(l)[0] && l.startsWith(threadsIn(l)[0]) && !/\s/.test(l))
+  return { calls, urls: [...new Set([...calls.flatMap(c => threadsIn(c[3] ?? '')), ...printed.flatMap(threadsIn)])] }
+}
+
+// A PostToolUse hook: a gh command that opens or replies on an issue or pull request watches it for this session
 function hook() {
   const input = JSON.parse(readFileSync(0, 'utf8'))
-  const command = input.tool_input?.command ?? ''
-  const m = command.match(/\bgh\s+(issue|pr)\s+(create|comment|review)\b\s*(\S+)?/)
-  if (!m) return
-  let urls = threadsIn(`${command}\n${JSON.stringify(input.tool_response ?? '')}`)
+  const response = input.tool_response
+  const { calls, urls } = actedOn(input.tool_input?.command ?? '', typeof response === 'string' ? response : (response?.stdout ?? ''))
+  if (!calls.length) return
   if (!urls.length) {
-    const arg = /^#?\d+$/.test(m[3] ?? '') ? [m[3].replace('#', '')] : []
+    // gh printed none (a review): ask gh which thread its argument, or the branch, names
+    const [, kind, , arg] = calls[0]
+    const repo = (input.tool_input.command.match(/(?:-R|--repo)[ =](\S+)/) ?? [])[1]
     try {
-      urls = threadsIn(gh([m[1], 'view', ...arg, '--json', 'url', '--jq', '.url'], input.cwd))
+      urls.push(...threadsIn(gh([kind, 'view', ...(/^#?\d+$/.test(arg ?? '') ? [arg.replace('#', '')] : []), ...(repo ? ['-R', repo] : []), '--json', 'url', '--jq', '.url'], input.cwd)))
     } catch {
       return
     }
