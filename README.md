@@ -5,9 +5,9 @@ someone else replies, even weeks later.
 
 - A `PostToolUse` hook watches each issue or PR a session opens or replies on (`gh issue|pr create|comment|review`),
   recording the session's id and folder in `~/.claude/gh-watch/watches.json`.
-- launchd runs `gh-watch poll` every 15 minutes. For each watched thread with new comments, reviews, or a close or
-  merge by anyone but you or a bot, it resumes that session (`claude -p --resume`) with what happened, then shows a
-  macOS notification. A closed thread stops being watched.
+- launchd runs `gh-watch poll` every 15 minutes. For each watched thread with new comments, reviews, or a close by
+  anyone but you or a bot, it resumes that session (`claude -p --resume`) with what happened, then shows a
+  macOS notification. A closed thread stops being watched; a merged PR does too, waking no one.
 - A woken session runs in plan mode: it reads the thread and the code and proposes what to do, changing nothing.
   `gh-watch resume` opens it, so you can read its answer and tell it to go ahead.
 
