@@ -28,6 +28,14 @@ git clone https://github.com/ken-talltree-io/gh-watch && cd gh-watch && node gh-
 This adds the hook to `~/.claude/settings.json`, links `~/.local/bin/gh-watch`, and loads the launchd job. Run it
 again after moving the folder. New sessions then pick up the hook.
 
+## Phone
+
+`gh-watch phone` sends each notification to your phone too, through [ntfy](https://ntfy.sh): it makes a private topic,
+prints its name to subscribe to in the ntfy app, and sends a test. The phone gets only who did what on which thread
+("adam commented", "owner/repo#12"), and tapping it opens the thread; the issue's title and the session's answer stay
+on the Mac, as ntfy's server sees what it carries. Anyone with the topic's name can read and post to it. To stop:
+`rm ~/.claude/gh-watch/ntfy`.
+
 ## Use
 
 | Command | Does |

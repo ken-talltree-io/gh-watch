@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { randomBytes } from 'node:crypto'
 
 const home = process.env.GH_WATCH_HOME ?? join(homedir(), '.claude', 'gh-watch')
 const file = join(home, 'watches.json')
@@ -68,8 +69,9 @@ const notifier = '/opt/homebrew/bin/terminal-notifier'
 const clickable = existsSync(notifier)
 
 // A notification: what happened (the latest, and how many more), on which thread, then what to do, which a click does
-function notify(events, thread, msg, click) {
+function notify(events, url, thread, msg, click) {
   const title = events.at(-1)[1] + (events.length > 1 ? ` (+${events.length - 1} more)` : '')
+  toPhone(title, url)
   // One macOS refuses (its notifications not allowed in System Settings) falls back to osascript's, which can't be clicked
   if (!clickable || spawnSync(notifier, ['-title', title, '-subtitle', thread, '-message', msg, '-group', thread, ...click]).status !== 0)
     spawnSync('osascript', [
@@ -80,6 +82,29 @@ function notify(events, thread, msg, click) {
     ])
 }
 // A click that opens Terminal on the session watching a URL
+// The phone's ntfy topic, set by gh-watch phone; none, no phone notifications
+const phone = join(home, 'ntfy')
+
+// To the phone too, through ntfy: only who did what on which thread, a tap opening it; what the issue and the session
+// say stays on the Mac, as ntfy's server sees the text
+function toPhone(title, url) {
+  if (!existsSync(phone)) return
+  const r = spawnSync('curl', ['-sf', '-m', '10', '-H', `Title: ${title}`, '-H', `Click: ${url}`, '-d', refOf(url), readFileSync(phone, 'utf8').trim()])
+  if (r.status !== 0) log(`${url}: ntfy refused it (curl exit ${r.status})`)
+}
+
+// Sets up phone notifications: a topic only this Mac and the phone know, then a test to it
+function setUpPhone() {
+  if (!existsSync(phone)) {
+    mkdirSync(home, { recursive: true })
+    writeFileSync(phone, `https://ntfy.sh/gh-watch-${randomBytes(12).toString('hex')}\n`)
+  }
+  const topic = readFileSync(phone, 'utf8').trim()
+  toPhone('gh-watch is set up', 'https://github.com/ken-talltree-io/gh-watch')
+  console.log(`In the ntfy app, subscribe to this topic on ntfy.sh (it's the only secret: keep it private):\n  ${topic.split('/').pop()}`)
+  console.log(`A test was sent; it shows once you've subscribed. Stop: rm ${phone}`)
+}
+
 // A click runs gh-watch's click command, by node's full path: a notification's command gets no shell PATH
 const clickOn = url => ['-execute', `${process.execPath} ${fileURLToPath(import.meta.url)} click ${url}`]
 
@@ -215,12 +240,12 @@ function poll(dryRun) {
       if (dryRun) console.log(`--- would resume ${w.session} in ${w.cwd}\n${prompt}\n`)
       else if (!existsSync(w.cwd)) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
-        notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
+        notify(events, url, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
         woke = { at: now, said: `${events.at(-1)[1]}, but its session's folder is gone` }
       } else if (running(w.session)) {
         // A session still running isn't woken: a second process would continue a copy of it the open one never sees
         log(`${url}: session ${w.session} is running, so the reply goes to you, not to it`)
-        notify(events, thread, `${headline(events.at(-1)[2] || '') || events.at(-1)[1]} · click to open its session`, clickOn(url))
+        notify(events, url, thread, `${headline(events.at(-1)[2] || '') || events.at(-1)[1]} · click to open its session`, clickOn(url))
         woke = { at: now, said: `its session was running: ${events.at(-1)[1]}, sent to you` }
       } else {
         log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
@@ -229,8 +254,8 @@ function poll(dryRun) {
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
         writeFileSync(last, JSON.stringify({ url, ...w }))
         woke = { at: now, said: r.status === 0 ? headline(said) : `${events.at(-1)[1]}; the session failed (exit ${r.status})` }
-        if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, clickOn(url))
-        else notify(events, thread, `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`, ['-open', url])
+        if (r.status === 0) notify(events, url, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, clickOn(url))
+        else notify(events, url, thread, `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`, ['-open', url])
       }
     }
     if (dryRun) continue
@@ -352,8 +377,9 @@ const commands = {
     list,
     resume: () => resume(args[0]),
     click: () => click(args[0]),
+    phone: setUpPhone,
     install,
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
   if (commands[cmd]) commands[cmd]()
-  else console.log('Usage: gh-watch install | list | resume [url or owner/repo#n] | add <url>… | remove <url>… | poll [--dry-run] | hook')
+  else console.log('Usage: gh-watch install | phone | list | resume [url or owner/repo#n] | add <url>… | remove <url>… | poll [--dry-run] | hook')
