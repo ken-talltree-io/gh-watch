@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { actedOn, age, commentsIn, eventsOf, headline, promptFor, restartIn, threadsIn } from './gh-watch.mjs'
+import { actedOn, age, commentsIn, eventsOf, handoffOf, headline, promptFor, restartIn, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -81,4 +81,16 @@ test('a session resumed in the main checkout is told its worktree is gone; a new
   assert.match(promptFor(url, 'T', events, 'moved'), /folder \(a worktree\) is gone, so it now runs in the main checkout/)
   assert.match(promptFor(url, 'T', events, 'fresh'), /new session taking it up: read the whole thread first, its latest handoff/)
   assert.match(promptFor(url, 'T', events, false), /This session may be days old/)
+})
+
+test('reads whom a thread waits on, and its recheck day, from its latest handoff', () => {
+  const comments = [
+    { body: '**Waiting on:** Adam\n**Recheck on:** 2026-11-23' },
+    { body: 'Thanks, looking now' },
+    { body: '**Done:** the page (#1899).\n**Next:** the template.\n- **Waiting on:** CI, then live\n- **Recheck on:** 2026-11-24, once deployed' },
+  ]
+  assert.deepEqual(handoffOf(comments), { waiting: 'CI, then live', recheck: '2026-11-24' })
+  assert.deepEqual(handoffOf(comments.slice(0, 1)), { waiting: 'Adam', recheck: '2026-11-23' })
+  assert.deepEqual(handoffOf([{ body: 'Waiting on: Ken' }]), { waiting: 'Ken', recheck: undefined })
+  assert.equal(handoffOf([{ body: 'Thanks' }]), undefined)
 })

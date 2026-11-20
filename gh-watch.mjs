@@ -47,6 +47,14 @@ export function eventsOf({ issue, comments, reviews = [], reviewComments = [] },
   return events
 }
 
+// The latest handoff among comments (a comment with a "Waiting on:" line): whom the thread waits on, and the day to
+// look again if it says one ("Recheck on: 2026-11-23"), on which the session is woken though no one has replied
+export function handoffOf(comments) {
+  const body = comments.map(c => c.body ?? '').findLast(b => /^\W*Waiting on:/im.test(b))
+  const line = label => body.match(new RegExp(`^\\W*${label}:\\**\\s*(.+)$`, 'im'))?.[1].trim()
+  return body && { waiting: line('Waiting on'), recheck: line('Recheck on')?.match(/\d{4}-\d{2}-\d{2}/)?.[0] }
+}
+
 // how: 'moved', the session resumed in the main checkout, as its folder is gone; 'fresh', a new session taking the
 // thread up, as the one waiting on it is gone
 export const promptFor = (url, title, events, how) =>
@@ -174,6 +182,19 @@ function checkoutOf(cwd) {
 export const restartIn = (w, exists = existsSync) =>
   [w.checkout, w.cwd.replace(/\/\.claude\/worktrees\/.*$/, '')].find(d => d && d !== w.cwd && exists(d))
 
+// A handoff the session just posted, kept on its watch: the poll reads only comments newer than a watch, and a thread
+// the comment first watches is watched from after it
+function keepHandoffs(output, session, cwd) {
+  for (const [, url, id] of output.matchAll(/(https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+)#issuecomment-(\d+)/g)) {
+    const handoff = handoffOf([api(`repos/${refOf(url).split('#')[0]}/issues/comments/${id}`)])
+    if (!handoff) continue
+    add([url], session, cwd)
+    const watches = load()
+    watches[url].handoff = handoff
+    save(watches)
+  }
+}
+
 function add(urls, session, cwd) {
   const watches = load()
   const since = new Date().toISOString()
@@ -209,6 +230,11 @@ function hook() {
   if (/\bgh\b/.test(command)) remember(commentsIn(output))
   const { calls, urls } = actedOn(command, output)
   if (!calls.length) return
+  try {
+    keepHandoffs(output, input.session_id, input.cwd)
+  } catch {
+    // GitHub unread: the poll reads a handoff in a comment newer than its watch
+  }
   if (!urls.length) {
     // gh printed none (a review): ask gh which thread its argument, or the branch, names
     const [, kind, , arg] = calls[0]
@@ -248,6 +274,10 @@ function poll(dryRun) {
       continue
     }
     const events = eventsOf(facts, w.since, me, seen)
+    // The handoff's recheck day come: the session is woken though no one has replied, and once only
+    const handoff = handoffOf(facts.comments) ?? w.handoff
+    const recheck = handoff?.recheck && handoff.recheck <= now.slice(0, 10)
+    if (recheck) events.push([now, `the recheck the handoff set for ${handoff.recheck} is due`, `Waiting on: ${handoff.waiting}`])
     let woke
     if (events.length) {
       const thread = `${refOf(url)}: ${facts.issue.title}`
@@ -289,7 +319,7 @@ function poll(dryRun) {
     }
     if (dryRun) continue
     if (facts.issue.state === 'closed') delete watches[url]
-    else watches[url] = { ...w, since: now, title: facts.issue.title, ...(woke && { woke }) }
+    else watches[url] = { ...w, since: now, title: facts.issue.title, handoff: recheck ? { ...handoff, recheck: undefined } : handoff, ...(woke && { woke }) }
   }
   if (!dryRun) save(watches)
 }
@@ -354,7 +384,11 @@ async function list() {
     const { session, cwd } = rows[0].w
     console.log(`\n${cwd.replace(homedir(), '~')} · session ${session.slice(0, 8)} · ${rows.length} thread${rows.length > 1 ? 's' : ''}`)
     for (const { url, w, title } of rows) {
-      const state = w.woke ? `woke ${age(w.woke.at, now)} ago: ${w.woke.said}` : `quiet ${age(w.added, now)}`
+      const state = [
+        w.woke ? `woke ${age(w.woke.at, now)} ago: ${w.woke.said}` : `quiet ${age(w.added, now)}`,
+        w.handoff?.waiting && `waiting on ${w.handoff.waiting}`,
+        w.handoff?.recheck && `recheck ${w.handoff.recheck}`,
+      ].filter(Boolean).join(' · ')
       console.log(`  ${refOf(url).padEnd(width)}  ${title.length > 60 ? title.slice(0, 59) + '…' : title}  · ${state}`)
     }
   }
