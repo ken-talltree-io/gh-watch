@@ -28,8 +28,8 @@ again after moving the folder. New sessions then pick up the hook.
 
 | Command | Does |
 |---|---|
-| `gh-watch resume [url]` | Opens the session last woken, or the one watching `url`, in its folder |
-| `gh-watch list` | Each watched thread, its session and folder |
+| `gh-watch resume [thread]` | Opens the session last woken, or the one watching a thread (its URL or `owner/repo#n`), in its folder |
+| `gh-watch list` | Each watched thread by the session waiting on it: its title, and how long it's been quiet or what it last woke for |
 | `gh-watch add <url>…` | Watches a thread for the current session (run it inside one) |
 | `gh-watch remove <url>…` | Stops watching |
 | `gh-watch poll [--dry-run]` | Polls now; `--dry-run` prints what it would send and changes nothing |

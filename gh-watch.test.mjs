@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { eventsOf, headline, threadsIn } from './gh-watch.mjs'
+import { age, eventsOf, headline, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -42,4 +42,9 @@ test('reports a close once, but not a merge', () => {
 
 test("a notification shows the session's first line, as plain text", () => {
   assert.equal(headline('\n## **Adam picked option 2 on #1847:** I\'d add the notes to the lot page\n\nDetail…'), "Adam picked option 2 on #1847: I'd add the notes to the lot page")
+})
+
+test('says how long ago in minutes, hours, then days', () => {
+  const now = '2026-11-20T12:00:00Z'
+  assert.deepEqual(['2026-11-20T11:55:00Z', '2026-11-20T09:00:00Z', '2026-11-17T12:00:00Z'].map(t => age(t, now)), ['5m', '3h', '3d'])
 })
