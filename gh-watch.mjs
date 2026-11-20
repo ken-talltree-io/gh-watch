@@ -55,16 +55,27 @@ const log = msg => {
 }
 const gh = (args, cwd) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const api = path => JSON.parse(gh(['api', path]))
-// A notification: what happened (the latest, and how many more), on which thread, then what to do
-const notify = (events, thread, msg) =>
-  spawnSync('osascript', [
-    '-e', 'on run argv',
-    '-e', 'display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)',
-    '-e', 'end run',
-    events.at(-1)[1] + (events.length > 1 ? ` (+${events.length - 1} more)` : ''),
-    thread,
-    msg,
-  ])
+// Homebrew's terminal-notifier runs a command when a notification is clicked; osascript's can't
+const notifier = '/opt/homebrew/bin/terminal-notifier'
+const clickable = existsSync(notifier)
+
+// A notification: what happened (the latest, and how many more), on which thread, then what to do, which a click does
+function notify(events, thread, msg, click) {
+  const title = events.at(-1)[1] + (events.length > 1 ? ` (+${events.length - 1} more)` : '')
+  if (clickable) spawnSync(notifier, ['-title', title, '-subtitle', thread, '-message', msg, '-group', thread, ...click])
+  else
+    spawnSync('osascript', [
+      '-e', 'on run argv',
+      '-e', 'display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)',
+      '-e', 'end run',
+      title, thread, msg,
+    ])
+}
+// A click that opens Terminal on the session watching a URL
+const resumeIn = url => [
+  '-execute',
+  `/usr/bin/osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "${fileURLToPath(import.meta.url)} resume ${url}"' -e 'end tell'`,
+]
 
 function add(urls, session, cwd) {
   const watches = load()
@@ -122,14 +133,15 @@ function poll(dryRun) {
       if (dryRun) console.log(`--- would resume ${w.session} in ${w.cwd}\n${prompt}\n`)
       else if (!existsSync(w.cwd)) {
         log(`${url}: ${w.cwd} is gone, so session ${w.session} can't be resumed`)
-        notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself")
+        notify(events, thread, "Its session's folder is gone, so reply on GitHub yourself", ['-open', url])
       } else {
         log(`${url}: resuming ${w.session} for ${events.map(e => e[1]).join(', ')}`)
         const r = spawnSync('claude', ['-p', '--resume', w.session, ...extra, prompt], { cwd: w.cwd, encoding: 'utf8', timeout: 30 * 60e3 })
         const said = (r.stdout || r.stderr || r.error?.message || '').trim()
         log(`${url}: session exited ${r.status}: ${said.slice(0, 1000)}`)
         writeFileSync(last, JSON.stringify({ url, ...w }))
-        notify(events, thread, r.status === 0 ? `${headline(said)} · gh-watch resume` : `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`)
+        if (r.status === 0) notify(events, thread, `${headline(said)} · ${clickable ? 'click' : 'run gh-watch resume'} to resume`, resumeIn(url))
+        else notify(events, thread, `The session failed (exit ${r.status}): see ~/.claude/gh-watch/log`, ['-open', url])
       }
     }
     if (dryRun) continue
