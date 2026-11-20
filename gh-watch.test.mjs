@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { actedOn, age, eventsOf, headline, threadsIn } from './gh-watch.mjs'
+import { actedOn, age, commentsIn, eventsOf, headline, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -12,13 +12,13 @@ test('finds each issue and pull request once, comment links included', () => {
   )
 })
 
-test("reports others' replies since the last poll, not mine, a bot's or older ones", () => {
+test("reports others' replies since the last poll, not a session's, a bot's or older ones", () => {
   const events = eventsOf(
     {
       issue: { state: 'open' },
       comments: [
         { user: user('adam'), created_at: '2026-11-02T00:00:00Z', body: 'Looks good' },
-        { user: user('ken'), created_at: '2026-11-03T00:00:00Z', body: 'Thanks' },
+        { id: 5, user: user('ken'), created_at: '2026-11-03T00:00:00Z', body: 'Thanks' },
         { user: user('ci', 'Bot'), created_at: '2026-11-03T00:00:00Z', body: 'Coverage' },
         { user: user('adam'), created_at: '2026-10-30T00:00:00Z', body: 'Edited since' },
       ],
@@ -29,6 +29,7 @@ test("reports others' replies since the last poll, not mine, a bot's or older on
     },
     since,
     'ken',
+    new Set(['5']),
   )
   assert.deepEqual(events.map(e => e[1]), ['adam commented', 'maintainer reviewed (changes_requested)'])
 })
@@ -55,4 +56,13 @@ test('watches the thread a gh command acted on, not other URLs the command menti
   assert.deepEqual(actedOn(command, output).urls, ['https://github.com/a/b/pull/3'])
   assert.deepEqual(actedOn('gh issue comment https://github.com/a/b/issues/4 --body hi', '').urls, ['https://github.com/a/b/issues/4'])
   assert.deepEqual(actedOn('echo https://github.com/a/b/issues/4', 'https://github.com/a/b/issues/4').calls, [])
+})
+
+test('a reply of mine from my phone wakes the session; one a session posted does not', () => {
+  const comments = [
+    { id: 1, user: user('ken'), created_at: '2026-11-02T00:00:00Z', body: 'Go with option 2' },
+    { id: 2, user: user('ken'), created_at: '2026-11-03T00:00:00Z', body: 'Posted by a session' },
+  ]
+  const posted = new Set(commentsIn('{"html_url":"https://github.com/a/b/issues/4#issuecomment-2"}'))
+  assert.deepEqual(eventsOf({ issue: { state: 'open' }, comments }, since, 'ken', posted).map(e => e[1]), ['you commented'])
 })
