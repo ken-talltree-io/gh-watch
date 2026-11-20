@@ -104,13 +104,26 @@ function running(session) {
   }
 }
 
-// Brings forward the Terminal tab an interactive session runs in; false if it's in no Terminal tab
+// The process attached to a background job (claude attach <id or name>) in a terminal, if one is
+function attached(s) {
+  const lines = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }).split('\n')
+  const names = [s.jobId, s.name].filter(Boolean)
+  const line = lines.find(l => {
+    const m = l.trim().match(/^(\d+) \S*claude attach (.+)$/)
+    return m && names.includes(m[2].replace(/^["']|["']$/g, ''))
+  })
+  return line && Number(line.trim().split(' ')[0])
+}
+
+// Brings forward the Terminal tab a process runs in; false if it's in no Terminal tab
 function focusTab(pid) {
   const tty = `/dev/${execFileSync('ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf8' }).trim()}`
   const script = [
     'on run argv',
     'tell application "Terminal"',
     'repeat with w in windows',
+    // a window with no tabs (a settings or about window) can't be read: skip it
+    'try',
     'repeat with t in tabs of w',
     'if tty of t is (item 1 of argv) then',
     'set selected of t to true',
@@ -119,6 +132,7 @@ function focusTab(pid) {
     'return "found"',
     'end if',
     'end repeat',
+    'end try',
     'end repeat',
     'end tell',
     'end run',
@@ -236,11 +250,14 @@ function resume(thread) {
     if (!focusTab(s.pid)) console.log(`Session ${w.session.slice(0, 8)} is open in another terminal app: switch to it there`)
     return
   }
+  const pid = s && attached(s)
+  if (pid && focusTab(pid)) return console.log(`Session ${w.session.slice(0, 8)} is attached in another Terminal tab: brought it forward`)
   const args = s ? ['attach', s.jobId] : ['--resume', w.session]
   process.exit(spawnSync('claude', args, { cwd: w.cwd, stdio: 'inherit' }).status ?? 1)
 }
 
-// A notification clicked: an open Terminal tab is brought forward, else Terminal opens on gh-watch resume
+// A notification clicked: the Terminal tab the session is open or attached in is brought forward, else Terminal opens
+// a tab on gh-watch resume
 function click(thread) {
   const w = watchOf(thread)
   const s = running(w.session)
@@ -248,6 +265,8 @@ function click(thread) {
     if (!focusTab(s.pid)) spawnSync('open', [w.url])
     return
   }
+  const pid = s && attached(s)
+  if (pid && focusTab(pid)) return
   const command = `${fileURLToPath(import.meta.url)} resume ${w.url}`
   spawnSync('osascript', ['-e', 'on run argv', '-e', 'tell application "Terminal"', '-e', 'activate', '-e', 'do script (item 1 of argv)', '-e', 'end tell', '-e', 'end run', command])
 }
