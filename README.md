@@ -12,6 +12,9 @@ someone else replies, even weeks later.
   the hook records each comment link in a session's `gh` output (`~/.claude/gh-watch/posted.json`).
 - A woken session runs in plan mode: it reads the thread and the code and proposes what to do, changing nothing.
   `gh-watch resume`, or clicking the notification, opens it, so you can read its answer and tell it to go ahead.
+- A session whose folder is gone (a worktree removed once its pull request merged) is replaced: a new session starts in
+  the main checkout the folder was in, reads the thread (its latest handoff comment first) and takes it over, so the
+  thread's next reply resumes the new one. The thread, not the session, holds where the work stands.
 - A session still running isn't woken, as a second process would continue a copy of it the open one never sees: the
   notification carries the reply instead. Opening it attaches to it if it's a background job (`claude attach`), or
   brings its Terminal tab forward; one that isn't running is resumed in its folder. Which sessions are running comes
@@ -53,6 +56,5 @@ Then remove the `gh-watch` hook from `~/.claude/settings.json`.
 
 ## Limits
 
-- A woken session that's also open in a terminal gets the reply appended out of sight. Resume it to see it.
-- A session whose folder was removed (a deleted worktree) can't be resumed. You get a notification instead.
-- Each wake-up is a model turn. Bots and your own comments are skipped.
+- A folder that was never in a git repository, once removed, can't be taken over. You get a notification instead.
+- Each wake-up is a model turn. Bots are skipped, and so are comments a session posted.

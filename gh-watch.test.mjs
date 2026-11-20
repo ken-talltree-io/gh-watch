@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { actedOn, age, commentsIn, eventsOf, headline, threadsIn } from './gh-watch.mjs'
+import { actedOn, age, commentsIn, eventsOf, headline, promptFor, restartIn, threadsIn } from './gh-watch.mjs'
 
 const since = '2026-11-01T00:00:00Z'
 const user = (login, type = 'User') => ({ login, type })
@@ -65,4 +65,18 @@ test('a reply of mine from my phone wakes the session; one a session posted does
   ]
   const posted = new Set(commentsIn('{"html_url":"https://github.com/a/b/issues/4#issuecomment-2"}'))
   assert.deepEqual(eventsOf({ issue: { state: 'open' }, comments }, since, 'ken', posted).map(e => e[1]), ['you commented'])
+})
+
+test("a thread whose session's worktree is gone is taken up in the checkout it was a worktree of", () => {
+  const cwd = '/src/app/.claude/worktrees/fix-1'
+  const exists = d => ['/src/app', '/src/main'].includes(d)
+  assert.equal(restartIn({ cwd, checkout: '/src/main' }, exists), '/src/main')
+  assert.equal(restartIn({ cwd }, exists), '/src/app')
+  assert.equal(restartIn({ cwd: '/src/elsewhere' }, exists), undefined)
+})
+
+test('a new session taking a thread up reads its latest handoff first', () => {
+  const events = [['2026-11-02T00:00:00Z', 'adam commented', 'Option 2']]
+  assert.match(promptFor('https://github.com/a/b/issues/4', 'T', events, true), /new session taking it up: read the whole thread first, its latest handoff/)
+  assert.match(promptFor('https://github.com/a/b/issues/4', 'T', events, false), /This session may be days old/)
 })
