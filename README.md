@@ -16,6 +16,9 @@ someone else replies, even weeks later.
   folder was in, as a session resumes from any folder. One that's gone itself (its transcript deleted) is replaced: a
   new session reads the thread, its latest handoff comment first, and takes it over. Either way the thread's next
   reply resumes it there.
+- A handoff, a comment with a `Waiting on:` line, says whom a thread waits on (`gh-watch list` shows it), and with a
+  `Recheck on: 2026-11-23` line, the day to wake its session though no one has replied: "check it's live tomorrow".
+  It's read from the newest handoff, once.
 - A session still running isn't woken, as a second process would continue a copy of it the open one never sees: the
   notification carries the reply instead. Opening it attaches to it if it's a background job (`claude attach`), or
   brings its Terminal tab forward; one that isn't running is resumed in its folder. Which sessions are running comes
